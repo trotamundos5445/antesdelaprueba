@@ -1,0 +1,189 @@
+name: Pipeline de revisión - Evaluación 2
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  revision:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Descargar el proyecto
+        uses: actions/checkout@v4
+
+      - name: Preparar funciones de comprobación
+        run: |
+          cat > /tmp/funciones.sh <<'EOF'
+          total_web() {
+            curl -s --retry 15 --retry-connrefused --retry-delay 2 http://localhost:8080 \
+              | grep -o 'id="total">[0-9]*' | grep -o '[0-9]*$'
+          }
+          total_consola() {
+            docker compose exec -T db mariadb -uroot -proot -N -e "SELECT COUNT(*) FROM empresa_cloud.servicios;"
+          }
+          esperar() {
+            local esperado=$1 web consola
+            web=$(total_web); consola=$(total_consola)
+            echo "Web: $web | Consola: $consola | Esperado: $esperado"
+            [ "$web" = "$esperado" ] && [ "$consola" = "$esperado" ]
+          }
+          EOF
+
+      - name: "1. Estructura del proyecto (5 pts)"
+        id: p1
+        run: |
+          for f in docker-compose.yml app/Dockerfile app/index.js app/package.json database/init.sql; do
+            test -f "$f" && echo "OK  $f" || { echo "FALTA $f"; exit 1; }
+          done
+          test -d evidencias && echo "OK  evidencias/" || { echo "FALTA evidencias/"; exit 1; }
+
+      - name: "2. Construcción de la imagen (10 pts)"
+        id: p2
+        run: docker build -t evaluacion2-app ./app
+
+      - name: "3. Levantamiento de la solución (15 pts)"
+        id: p3
+        run: |
+          docker compose up -d --build --wait
+          docker compose ps
+
+      - name: "4. Web + 4 registros iniciales (10 pts)"
+        id: p4
+        run: |
+          source /tmp/funciones.sh
+          curl -s http://localhost:8080
+          esperar 4
+
+      - name: "5. Inserción de 3 registros por consola (10 pts)"
+        id: p5
+        run: |
+          docker compose exec -T db mariadb -uroot -proot empresa_cloud -e "
+            INSERT INTO servicios (nombre, tipo, estado) VALUES
+              ('Almacenamiento Objetos', 'Storage', 'Activo'),
+              ('Balanceador de Carga',   'Red',     'Activo'),
+              ('Monitoreo',              'Logs',    'Mantención');
+            SELECT * FROM servicios;"
+
+      - name: "6. Comprobación de 7 registros (10 pts)"
+        id: p6
+        run: |
+          source /tmp/funciones.sh
+          esperar 7
+
+      - name: "7. Eliminar contenedores conservando el volumen (10 pts)"
+        id: p7
+        run: |
+          docker compose down
+          docker ps -a --filter "name=evaluacion2" --format '{{.Names}}' | grep . && { echo "Quedaron contenedores"; exit 1; } || true
+          docker volume inspect evaluacion2_datos-db > /dev/null || { echo "El volumen no existe"; exit 1; }
+          echo "Volumen conservado"
+
+      - name: "8. Persistencia después de recrear (15 pts)"
+        id: p8
+        run: |
+          source /tmp/funciones.sh
+          docker compose up -d --wait
+          esperar 7
+
+      - name: "9. Eliminación del volumen (5 pts)"
+        id: p9
+        run: |
+          docker compose down -v
+          docker volume inspect evaluacion2_datos-db > /dev/null 2>&1 && { echo "El volumen sigue existiendo"; exit 1; } || echo "Volumen eliminado"
+
+      - name: "10. Reinicialización desde init.sql (10 pts)"
+        id: p10
+        run: |
+          source /tmp/funciones.sh
+          docker compose up -d --wait
+          esperar 4
+
+      - name: Logs si algo falló
+        if: failure()
+        run: docker compose logs
+
+      - name: Limpieza
+        if: always()
+        run: docker compose down -v
+
+      - name: Resultado final
+        if: always()
+        env:
+          R1: ${{ steps.p1.outcome }}
+          R2: ${{ steps.p2.outcome }}
+          R3: ${{ steps.p3.outcome }}
+          R4: ${{ steps.p4.outcome }}
+          R5: ${{ steps.p5.outcome }}
+          R6: ${{ steps.p6.outcome }}
+          R7: ${{ steps.p7.outcome }}
+          R8: ${{ steps.p8.outcome }}
+          R9: ${{ steps.p9.outcome }}
+          R10: ${{ steps.p10.outcome }}
+        run: |
+          VERDE=$'\e[1;32m'; ROJO=$'\e[1;31m'; GRIS=$'\e[0;90m'; CIAN=$'\e[1;36m'; NC=$'\e[0m'
+
+          cat > /tmp/banner.txt <<'EOF'
+           _                _         ____
+          | |    ___  _ __ | | _____ |  _ \  _____   __
+          | |   / _ \| '_ \| |/ / _ \| | | |/ _ \ \ / /
+          | |__| (_) | | | |   < (_) | |_| |  __/\ V /
+          |_____\___/|_| |_|_|\_\___/|____/ \___| \_/
+          EOF
+
+          nombres=(
+            "Estructura del proyecto"
+            "Construcción de la imagen"
+            "Levantamiento de la solución"
+            "Web + 4 registros iniciales"
+            "Inserción de 3 registros por consola"
+            "Comprobación de 7 registros"
+            "Eliminar contenedores conservando el volumen"
+            "Persistencia después de recrear"
+            "Eliminación del volumen"
+            "Reinicialización desde init.sql"
+          )
+          puntos=(5 10 15 10 10 10 10 15 5 10)
+          obtenido=0
+
+          # Banner en el log
+          echo "$CIAN$(cat /tmp/banner.txt)$NC"
+          echo ""
+
+          # Encabezado del resumen (pestaña Summary)
+          {
+            echo '```'
+            cat /tmp/banner.txt
+            echo '```'
+            echo "## Resultado de la revisión - Evaluación 2"
+            echo ""
+            echo "| Estado | Prueba | Puntos |"
+            echo "|:---:|---|---:|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          linea="+--------+-----------+----------------------------------------------------"
+          echo "$linea"
+          echo "| Estado | Puntos    | Prueba"
+          echo "$linea"
+          for i in "${!nombres[@]}"; do
+            n=$((i + 1)); var="R$n"; estado="${!var}"; pts=${puntos[$i]}
+            case "$estado" in
+              success) marca="${VERDE}  [✔]  ${NC}"; md="✅"; gana=$pts ;;
+              failure) marca="${ROJO}  [✘]  ${NC}"; md="❌"; gana=0 ;;
+              *)       marca="${GRIS}  [-]  ${NC}"; md="⏭️"; gana=0 ;;
+            esac
+            obtenido=$((obtenido + gana))
+            printf "| %b | %2d / %2d   | %d. %s\n" "$marca" "$gana" "$pts" "$n" "${nombres[$i]}"
+            echo "| $md | $n. ${nombres[$i]} | $gana / $pts |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "$linea"
+          echo "  Puntaje total: ${CIAN}${obtenido} / 100${NC}"
+          echo "  ${GRIS}[✔] aprobada   [✘] fallida   [-] no ejecutada${NC}"
+
+          {
+            echo ""
+            echo "### Puntaje total: $obtenido / 100"
+          } >> "$GITHUB_STEP_SUMMARY"
