@@ -12,19 +12,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "healthcheck.sh --su-mysql --connect --innodb_initialized || mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-    healthcheck: 
-    test: ["CMD-SHELL","curl -fsS http://localhost:8080/ && pgrep -f 'node' >/dev/null"]
-      interval: 10s 
-      timeout: 5s
-      retries: 5
-      start_period: 15s
 
     healthcheck:
       test: ["CMD-SHELL","wget -q --spider http:127.0.0.1:3000/"]
